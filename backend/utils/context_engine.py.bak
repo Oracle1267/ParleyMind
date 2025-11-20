@@ -1,0 +1,199 @@
+import datetime
+import pytz
+import requests
+import time
+import json
+from pathlib import Path
+from backend.utils.social_signal import get_team_mentions
+from backend.utils.reddit_collector_sports import collect_reddit_sports
+
+
+TEAM_ALIASES = {
+    "Utah Utes": "Utah",
+    "Utah State Aggies": "Utah State",
+    "Texas Longhorns": "Texas",
+    "Georgia Bulldogs": "Georgia",
+    "Alabama Crimson Tide": "Alabama",
+    "Florida Gators": "Florida",
+    "Notre Dame Fighting Irish": "Notre Dame",
+    "Ohio State Buckeyes": "Ohio State",
+    "Michigan Wolverines": "Michigan",
+    "Penn State Nittany Lions": "Penn State",
+    "LSU Tigers": "LSU",
+    "Clemson Tigers": "Clemson",
+    "Oklahoma Sooners": "Oklahoma",
+    "Tennessee Volunteers": "Tennessee",
+}
+
+def normalize_team_name(name: str) -> str:
+    return TEAM_ALIASES.get(name, name)
+
+def safe_datetime(dt):
+    if dt.tzinfo is not None:
+        return dt.astimezone(pytz.UTC).replace(tzinfo=None)
+    return dt
+
+def get_espn_base(sport):
+    """Return ESPN base URL by sport."""
+    mapping = {
+        "cfb": "football/college-football",
+        "nfl": "football/nfl",
+        "ncaab": "basketball/mens-college-basketball",
+        "nhl": "hockey/nhl",
+    }
+    return mapping.get(sport, "football/college-football")
+
+def attach_reddit_context(team: str, sport_key: str, payload: dict):
+    """Attach Reddit sentiment and mentions to the context payload."""
+    cache = Path("data/social/reddit_sports.json")
+    if not cache.exists():
+        payload.update({
+            "reddit_mentions": 0,
+            "reddit_sentiment": "neutral",
+            "reddit_posts": []
+        })
+        return
+
+    try:
+        data = json.loads(cache.read_text(encoding="utf-8"))
+    except Exception:
+        payload.update({
+            "reddit_mentions": 0,
+            "reddit_sentiment": "neutral",
+            "reddit_posts": []
+        })
+        return
+
+    if sport_key.lower() == "nhl":
+        section = data.get("nhl", {})
+    elif sport_key.lower() in ("ncaab", "basketball"):
+        section = data.get("ncaab", {})
+    else:
+        section = {}
+
+    posts = section.get("posts", [])
+    by_team = section.get("by_team", {})
+
+    stats = by_team.get(team)
+    if not stats:
+        # Try partial name match
+        for k, v in by_team.items():
+            if k.lower() in team.lower() or team.lower() in k.lower():
+                stats = v
+                break
+
+    payload["reddit_mentions"] = int((stats or {}).get("count", 0))
+    avg = float((stats or {}).get("avg_sentiment", 0.0))
+    payload["reddit_sentiment"] = "positive" if avg > 0.15 else "negative" if avg < -0.15 else "neutral"
+
+    # Attach a few recent posts
+    team_posts = [p for p in posts if team.lower() in p.get("team_hit", "").lower()]
+    payload["reddit_posts"] = team_posts[:5]
+
+def get_team_context(team, sport):
+    team = normalize_team_name(team)
+    now = safe_datetime(datetime.datetime.utcnow())
+    base_path = get_espn_base(sport)
+    base_url = f"https://site.api.espn.com/apis/site/v2/sports/{base_path}/teams"
+
+    # --- Reddit context first (always executes) ---
+    reddit_posts, reddit_mentions, reddit_sentiment = [], 0, "neutral"
+    try:
+        import json
+        data_dir = Path(__file__).resolve().parents[2] / "data" / "raw_feeds"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        latest_files = sorted(data_dir.glob("reddit_sports_*.json"), reverse=True)
+        if not latest_files or (time.time() - latest_files[0].stat().st_mtime) > 21600:
+            run_reddit_collector_sports()
+            latest_files = sorted(data_dir.glob("reddit_sports_*.json"), reverse=True)
+        if latest_files:
+            with open(latest_files[0], "r", encoding="utf-8") as f:
+                all_posts = json.load(f)
+                for post in all_posts:
+                    text = f"{post.get('title','')} {post.get('text','')}".lower()
+                    if team.lower() in text:
+                        reddit_posts.append(post)
+        reddit_mentions = len(reddit_posts)
+        if reddit_mentions:
+            from textblob import TextBlob
+            scores = [TextBlob(p.get("text","")).sentiment.polarity for p in reddit_posts]
+            avg = sum(scores) / len(scores)
+            if avg > 0.2: reddit_sentiment = "positive"
+            elif avg < -0.2: reddit_sentiment = "negative"
+    except Exception as e:
+        print(f"[Reddit Context Error] {e}")
+
+    # --- ESPN + social context ---
+    try:
+        r = requests.get(base_url)
+        if r.status_code != 200:
+            raise ValueError("ESPN API unavailable")
+
+        data = r.json()
+        team_items = data.get("sports", [])[0].get("leagues", [])[0].get("teams", [])
+        match = next((t for t in team_items if team.lower() in t["team"]["displayName"].lower()), None)
+
+        if not match:
+            espn_id = None
+            notes = "Team not found"
+        else:
+            espn_id = match["team"]["id"]
+            notes = f"Found ESPN ID {espn_id}"
+
+        # Default placeholders
+        momentum, bye_week, injuries, key_injuries = "neutral", False, [], 0
+
+        if espn_id:
+            detail_url = f"https://site.api.espn.com/apis/site/v2/sports/{base_path}/teams/{espn_id}"
+            detail = requests.get(detail_url).json()
+
+            prev_games = detail.get("team", {}).get("previousEvent", [])
+            recent_results = []
+            for game in prev_games[-5:]:
+                comps = game.get("competitions", [{}])[0].get("competitors", [])
+                if comps:
+                    tcomp = next((c for c in comps if c.get("team", {}).get("id") == espn_id), None)
+                    if tcomp:
+                        recent_results.append(tcomp.get("winner", False))
+            win_rate = recent_results.count(True) / len(recent_results) if recent_results else 0.5
+            momentum = "hot" if win_rate >= 0.75 else "cold" if win_rate <= 0.25 else "neutral"
+
+            inj_url = f"https://sports.core.api.espn.com/v2/sports/{base_path}/teams/{espn_id}/injuries"
+            inj_data = requests.get(inj_url).json()
+            injuries = inj_data.get("items", [])
+            key_injuries = sum(1 for i in injuries if "starter" in str(i).lower())
+
+            if prev_games:
+                last_date = safe_datetime(datetime.datetime.fromisoformat(prev_games[-1]["date"].replace("Z","+00:00")))
+                days_since = (now - last_date).days
+                bye_week = days_since > 10
+
+              # --- Merge Social + Reddit Context ---
+        social = get_team_mentions(team, sport)
+        context = {
+            "sport": sport,
+            "team": team,
+            "momentum": momentum,
+            "bye_week": bye_week,
+            "injuries": injuries[:10],
+            "key_injuries": key_injuries,
+            "notes": notes,
+        }
+        context.update(social)
+
+        # attach Reddit stats from cache
+        attach_reddit_context(team, sport, context)
+        return context
+    except Exception as e:
+        # fallback for ESPN or network issues
+        fallback = {
+            "sport": sport,
+            "team": team,
+            "momentum": "neutral",
+            "bye_week": False,
+            "key_injuries": 0,
+            "injuries": [],
+            "notes": str(e),
+        }
+        attach_reddit_context(team, sport, fallback)
+        return fallback

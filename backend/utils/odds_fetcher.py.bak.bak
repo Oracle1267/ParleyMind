@@ -1,0 +1,47 @@
+import requests
+import os
+
+API_KEY = os.getenv("ODDS_API_KEY", "c17a1600a50e9acec4a460903dc73c7e")
+BASE_URL = "https://api.the-odds-api.com/v4/sports"
+
+
+def _fetch_odds(sport_key):
+    """Generic odds fetcher for any supported sport."""
+    params = {
+        "apiKey": API_KEY,
+        "regions": "us",
+        "markets": "h2h,spreads,totals",
+        "oddsFormat": "american"
+    }
+    url = f"{BASE_URL}/{sport_key}/odds"
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"[⚠️ OddsAPI] Fetch failed for {sport_key}: {e}")
+        return []
+
+
+# --------------------------
+# Sport-Specific Wrappers
+# --------------------------
+def get_nfl_odds():
+    return _fetch_odds("americanfootball_nfl")
+
+
+def get_cfb_odds():
+    return _fetch_odds("americanfootball_ncaaf")
+
+
+def get_wncaab_odds():
+    """Women’s College Basketball"""
+    return _fetch_odds("basketball_ncaaw")
+
+
+def get_volleyball_odds():
+    """
+    Volleyball placeholder — Odds API doesn’t have NCAA volleyball.
+    Later we’ll integrate ESPN or Sportradar.
+    """
+    return []

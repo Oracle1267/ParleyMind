@@ -1,0 +1,215 @@
+from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
+from backend.models import db, Bet, Leg
+from backend.utils.odds_fetcher import (
+    get_cfb_odds,
+    get_nfl_odds,
+    get_wncaab_odds,
+    get_volleyball_odds,
+)
+from backend.utils.context_fetcher import get_team_injuries
+from backend.utils.tradecore_bridge import get_team_signal
+
+app = Flask(__name__)
+CORS(app)
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///parlaymind.db"
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+db.init_app(app)
+
+
+@app.route("/")
+def home():
+    return render_template("index.html")
+
+
+print(">>> Running main.py from:", __file__)
+
+print(">>> Registered routes before startup:")
+with app.app_context():
+    for rule in app.url_map.iter_rules():
+        print("   ", rule)
+
+
+@app.route("/api/context/ai/<team>")
+def ai_context(team):
+    return jsonify(get_team_signal(team))
+
+
+# --------------------------
+# Core Bet Operations
+# --------------------------
+def _infer_market_type(desc):
+    d = desc.lower()
+    if "spread" in d or "+" in d or "-" in d:
+        return "Spread"
+    if "moneyline" in d or "ml" in d:
+        return "Moneyline"
+    if "over" in d or "under" in d or "total" in d:
+        return "Total"
+    return "Other"
+
+
+@app.route("/api/bet", methods=["POST"])
+def add_bet():
+    data = request.json
+    legs_data = data.get("legs", [])
+    bet = Bet(
+        bettor=data.get("bettor", "Me"),
+        stake=data["stake"],
+        parlay_odds=data["parlay_odds"],
+        sport=data.get("sport", "CFB"),
+        result=data.get("result", "pending"),
+        payout=data.get("payout", 0),
+        profit_boost=data.get("profit_boost", 0.0),
+        num_legs=len(legs_data),
+    )
+    db.session.add(bet)
+    for leg_data in legs_data:
+        db.session.add(
+            Leg(
+                bet=bet,
+                description=leg_data["desc"],
+                odds=leg_data.get("odds", 0),
+                market_type=_infer_market_type(leg_data["desc"]),
+            )
+        )
+    db.session.commit()
+    bet.update_profit()
+    return jsonify({"status": "ok", "bet_id": bet.id})
+
+
+@app.route("/api/bets", methods=["GET"])
+def list_bets():
+    bets = Bet.query.all()
+    return jsonify(
+        [
+            {
+                "id": b.id,
+                "bettor": b.bettor,
+                "sport": b.sport,
+                "stake": b.stake,
+                "parlay_odds": b.parlay_odds,
+                "result": b.result,
+                "payout": b.payout or 0.0,
+            }
+            for b in bets
+        ]
+    )
+
+
+@app.route("/api/bet/<int:bet_id>", methods=["DELETE"])
+def delete_bet(bet_id):
+    bet = Bet.query.get(bet_id)
+    if not bet:
+        return jsonify({"error": "Bet not found"}), 404
+    db.session.delete(bet)
+    db.session.commit()
+    return jsonify({"status": "deleted", "bet_id": bet_id})
+
+
+# --------------------------
+# Context + Analytics
+# --------------------------
+@app.route("/api/context/<sport>/<team>")
+def api_team_context(sport, team):
+    ctx = get_team_injuries(team_name=team, sport=sport)
+    return jsonify(ctx)
+
+
+@app.route("/api/context_batch", methods=["POST"])
+def api_context_batch():
+    data = request.get_json(force=True) or {}
+    items = data.get("items", [])
+    out = {}
+    for it in items:
+        sport = (it.get("sport") or "cfb").lower()
+        team = it.get("team")
+        if not team:
+            continue
+        key = f"{sport}|{team}"
+        out[key] = get_team_injuries(team_name=team, sport=sport)
+    return jsonify(out)
+
+
+# --------------------------
+# Odds Endpoints
+# --------------------------
+@app.route("/api/odds_ui/<sport>")
+def odds_ui(sport):
+    try:
+        sport = sport.lower()
+        if sport == "cfb":
+            data = get_cfb_odds()
+        elif sport == "nfl":
+            data = get_nfl_odds()
+        elif sport == "wncaab":
+            data = get_wncaab_odds()
+        elif sport == "volleyball":
+            data = get_volleyball_odds()
+        else:
+            return jsonify({"error": f"Unsupported sport '{sport}'"}), 400
+
+        def normalize_game(g):
+            return {
+                "id": g.get("id"),
+                "home_team": g.get("home_team") or g.get("home"),
+                "away_team": g.get("away_team") or g.get("away"),
+                "commence_time": g.get("commence_time"),
+                "bookmakers": g.get("bookmakers", []),
+            }
+
+        games = []
+        for raw in data:
+            g = normalize_game(raw)
+            chosen = None
+            for bm in g["bookmakers"]:
+                if bm.get("key") == "fanduel":
+                    chosen = bm
+                    break
+            if not chosen and g["bookmakers"]:
+                chosen = g["bookmakers"][0]
+
+            markets = []
+            if chosen:
+                for m in chosen.get("markets", []):
+                    outcomes = [
+                        {
+                            "name": o.get("name"),
+                            "price": o.get("price"),
+                            "point": o.get("point"),
+                        }
+                        for o in m.get("outcomes", [])
+                    ]
+                    markets.append(
+                        {
+                            "bookmaker": chosen.get("title", "Unknown"),
+                            "market": m.get("key"),
+                            "outcomes": outcomes,
+                        }
+                    )
+
+            games.append(
+                {
+                    "id": g["id"],
+                    "home_team": g["home_team"],
+                    "away_team": g["away_team"],
+                    "commence_time": g["commence_time"],
+                    "markets": markets,
+                }
+            )
+
+        return jsonify(games)
+    except Exception as e:
+        import traceback
+
+        print("⚠️ Error in odds_ui:", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+# --------------------------
+# Initialization
+# --------------------------
+if __name__ == "__main__":
+    with app.app_context():
+        db.create_all()
+    app.run(debug=True, port=5200)

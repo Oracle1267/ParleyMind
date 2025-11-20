@@ -1,0 +1,80 @@
+# backend/discover_team_stats_urls_v3.py
+import csv, re, time
+from pathlib import Path
+from urllib.parse import urljoin
+import requests
+
+ROOT = Path(__file__).parent.parent
+DATA = ROOT / "data"
+DATA.mkdir(exist_ok=True, parents=True)
+
+INPUT = DATA / "ncaab_teams_44.csv"   # two columns: team_name,base_url (e.g. "Georgia Tech","https://ramblinwreck.com/")
+OK_OUT = DATA / "team_stats_links.csv"
+BAD_OUT = DATA / "team_stats_failures.csv"
+
+# Common NCAAB stats URL patterns (most schools resolve one of these)
+PATTERNS = [
+    "sports/m-baskbl/stats",
+    "sports/mens-basketball/stats",
+    "sports/mbball/stats",
+    "sports/m-basketball/stats",
+    "sports/msoc/../m-basketball/stats",  # some CMS oddities
+    "sports/mensbasketball/stats",
+    "sports/mbb/stats",
+    "stats.aspx?path=mbball",
+    "statistics.aspx?path=mbball",
+    "statistics?path=mbball",
+    "statistics/mbball",
+    "mbball/stats",
+    "mens-basketball/stats",
+    "mbasketball/stats",
+]
+
+HDRS = {"User-Agent": "ParleyMind/0.9 url-checker"}
+TIMEOUT = 8
+
+def looks_like_stats(html: str) -> bool:
+    if not html: return False
+    hay = html.lower()
+    keys = ["stats", "statistics", "per game", "rebounds", "assists", "field goals", "3-point"]
+    return sum(k in hay for k in keys) >= 3
+
+def try_one(session, base):
+    base = base.strip()
+    if not base.endswith("/"): base += "/"
+    for pat in PATTERNS:
+        url = urljoin(base, pat)
+        try:
+            r = session.get(url, headers=HDRS, timeout=TIMEOUT, allow_redirects=True)
+            if r.status_code == 200 and looks_like_stats(r.text):
+                return url, r.url, r.status_code
+        except requests.RequestException:
+            pass
+        time.sleep(0.2)
+    return None, None, None
+
+def main():
+    ok_rows, bad_rows = [], []
+    with open(INPUT, newline="", encoding="utf-8-sig") as f, requests.Session() as s:
+
+        rd = csv.DictReader(f)
+        for row in rd:
+            team, base = row["team_name"], row["base_url"]
+            url, final, code = try_one(s, base)
+            if url:
+                ok_rows.append({"team_name": team, "team_url": final})
+                print(f"✅ {team} → {final}")
+            else:
+                bad_rows.append({"team_name": team, "base_url": base})
+                print(f"❌ {team} (no match)")
+
+    with open(OK_OUT, "w", newline="", encoding="utf-8") as f:
+        wr = csv.DictWriter(f, fieldnames=["team_name","team_url"])
+        wr.writeheader(); wr.writerows(ok_rows)
+
+    with open(BAD_OUT, "w", newline="", encoding="utf-8") as f:
+        wr = csv.DictWriter(f, fieldnames=["team_name","base_url"])
+        wr.writeheader(); wr.writerows(bad_rows)
+
+if __name__ == "__main__":
+    main()

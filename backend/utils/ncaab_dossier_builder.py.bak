@@ -1,0 +1,197 @@
+"""
+NCAAB Dossier Builder
+---------------------
+Synchronizes team data, Reddit sentiment, and odds snapshots into the team_dossier table.
+"""
+
+import sqlite3
+from pathlib import Path
+import csv
+import json
+import datetime
+
+
+from pathlib import Path
+
+DB_PATH = Path(r"C:\Projects\parleymind\backend\instance\parlaymind.db")
+
+CSV_PATH = Path(__file__).resolve().parents[2] / "data" / "ncaab_teams_all.csv"
+ODDS_FILE = Path(__file__).resolve().parents[2] / "data" / "odds_snapshot.json"
+REDDIT_FILE = Path(__file__).resolve().parents[2] / "data" / "social" / "reddit_sports.json"
+
+
+# ----------------------------------------------------------------------
+# Utility
+# ----------------------------------------------------------------------
+def get_db_connection():
+    import sqlite3
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# ----------------------------------------------------------------------
+# Team Sync
+# ----------------------------------------------------------------------
+def get_ncaab_teams_from_espn():
+    """
+    Load team list from ncaab_teams_all.csv safely, ignoring header variations or BOM artifacts.
+    """
+    import csv
+    from pathlib import Path
+
+    data_path = Path(__file__).resolve().parents[2] / "data" / "ncaab_teams_all.csv"
+    teams = []
+    with open(data_path, newline='', encoding='utf-8-sig') as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            raise ValueError(f"Invalid or empty CSV file: {data_path}")
+        # Normalize header names (lowercase + strip)
+        header_map = {name.strip().lower(): name for name in reader.fieldnames}
+        team_key = next((header_map[k] for k in header_map if "team" in k), None)
+        url_key = next((header_map[k] for k in header_map if "url" in k), None)
+        if not team_key:
+            raise KeyError(f"No column containing 'team' found in {data_path}")
+        for row in reader:
+            teams.append({
+                "team_name": row[team_key].strip(),
+                "base_url": row[url_key].strip() if url_key else ""
+            })
+    print(f"[DossierBuilder] Loaded {len(teams)} teams from CSV.")
+    return teams
+def sync_teams_to_db():
+    """Ensure all teams from CSV are present in the ncaab_team table."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ncaab_team (
+            id INTEGER PRIMARY KEY,
+            name TEXT UNIQUE,
+            created_at DATETIME
+        )
+    """)
+
+    teams = get_ncaab_teams_from_espn()
+    for t in teams:
+        cur.execute(
+            "INSERT OR IGNORE INTO ncaab_team (name, created_at) VALUES (?, ?)",
+            (t["team_name"], datetime.datetime.now(datetime.UTC))
+        )
+
+    conn.commit()
+    conn.close()
+    print(f"[DossierBuilder] ✅ Synced {len(teams)} teams into ncaab_team.")
+
+# ----------------------------------------------------------------------
+# Dossier Update
+# ----------------------------------------------------------------------
+import requests
+from bs4 import BeautifulSoup
+
+def update_all_dossiers(_=None):
+    """Update dossiers with sentiment, odds, and base site info."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS team_dossier (
+            id INTEGER PRIMARY KEY,
+            team_id INTEGER,
+            team_name TEXT UNIQUE,
+            base_url TEXT,
+            summary TEXT,
+            snapshot_date DATE,
+            reddit_sentiment TEXT,
+            market_prob REAL,
+            model_prob REAL,
+            edge REAL,
+            value_index REAL,
+            created_at DATETIME
+        )
+    """)
+
+    # Load odds + Reddit
+    odds = json.load(open(ODDS_FILE, encoding="utf-8")) if ODDS_FILE.exists() else []
+    reddit = json.load(open(REDDIT_FILE, encoding="utf-8")) if REDDIT_FILE.exists() else []
+
+    def get_sentiment(name):
+        for post in reddit:
+            # If post is a string
+            if isinstance(post, str):
+                if name.lower() in post.lower():
+                    return "neutral"
+            # If post is a dictionary (expected modern format)
+            elif isinstance(post, dict):
+                if name.lower() in post.get("title", "").lower():
+                    return post.get("sentiment", "neutral")
+        return "neutral"
+
+
+    cur.execute("SELECT id, name FROM ncaab_team")
+    teams = cur.fetchall()
+
+    count = 0
+    for t in teams:
+        team_id = t["id"]
+        name = t["name"]
+        base_url = ""
+        summary = ""
+
+        # Find matching URL in CSV
+        with open(CSV_PATH, newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if name.lower() == row.get("team_name", "").lower():
+                    base_url = row.get("base_url", "")
+                    break
+
+        # Try to fetch brief info from website
+        if base_url:
+            try:
+                r = requests.get(base_url, timeout=8)
+                if r.ok:
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    title = soup.find("title").get_text(strip=True) if soup.find("title") else ""
+                    meta = soup.find("meta", attrs={"name": "description"})
+                    desc = meta["content"].strip() if meta and "content" in meta.attrs else ""
+                    summary = title or desc or ""
+            except Exception as e:
+                summary = f"Error fetching: {e}"
+
+        # Odds + sentiment
+        match = next((o for o in odds if o["team"].lower() in name.lower()), None)
+        market_prob = match["market_prob"] if match else 0.5
+        sent = get_sentiment(name)
+        edge = round(market_prob - 0.5, 3)
+        val = abs(edge) * (1.0 if sent == "positive" else 0.9)
+
+        cur.execute("""
+            INSERT INTO team_dossier
+                (team_id, team_name, base_url, summary, snapshot_date, reddit_sentiment,
+                 market_prob, model_prob, edge, value_index, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(team_name) DO UPDATE SET
+                base_url=excluded.base_url,
+                summary=excluded.summary,
+                reddit_sentiment=excluded.reddit_sentiment,
+                market_prob=excluded.market_prob,
+                edge=excluded.edge,
+                value_index=excluded.value_index,
+                created_at=excluded.created_at;
+        """, (
+            team_id, name, base_url, summary, datetime.date.today(), sent,
+            market_prob, 0.0, edge, val, datetime.datetime.now(datetime.UTC)
+        ))
+        count += 1
+
+    conn.commit()
+    conn.close()
+    print(f"[DossierBuilder] ✅ Updated {count} dossiers with URLs and metadata.")
+
+
+
+# ----------------------------------------------------------------------
+# Entrypoint
+# ----------------------------------------------------------------------
+if __name__ == "__main__":
+    sync_teams_to_db()
+    update_all_dossiers()

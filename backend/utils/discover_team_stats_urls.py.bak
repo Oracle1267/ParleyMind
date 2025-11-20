@@ -1,0 +1,114 @@
+"""
+ParleyMind Scout v1
+===================
+Automatically discovers NCAAB team stats URLs for each Division I school.
+
+Usage:
+    python -m backend.utils.discover_team_stats_urls
+
+Outputs:
+    - CSV file at data/team_stats_links.csv
+    - Optional database table "team_stats_sources" in instance/parlaymind.db
+"""
+
+import os
+import csv
+import sqlite3
+import requests
+from datetime import datetime
+from urllib.parse import urljoin
+
+# === CONFIGURATION ===
+DB_PATH = r"C:\Projects\parleymind\backend\instance\parlaymind.db"
+OUTPUT_CSV = r"C:\Projects\parleymind\data\team_stats_links.csv"
+
+CANDIDATE_PATHS = [
+    "/sports/mens-basketball/stats",
+    "/sports/m-baskbl/stats",
+    "/sports/mbball/stats",
+    "/sport/m-baskbl/stats",
+    "/sports/men/basketball/stats",
+    "/sports/m-basketball/stats",
+]
+
+# Initial test teams (you can expand to full Division I list later)
+TEAM_DOMAINS = [
+    ("American University Eagles", "aueagles.com"),
+    ("Arizona State Sun Devils", "thesundevils.com"),
+    ("Arizona Wildcats", "arizonawildcats.com"),
+    ("Arkansas Razorbacks", "arkansasrazorbacks.com"),
+    ("Auburn Tigers", "auburntigers.com"),
+    ("Bellarmine Knights", "athletics.bellarmine.edu"),
+]
+
+
+def init_db():
+    """Ensure database and table exist."""
+    if not os.path.exists(os.path.dirname(DB_PATH)):
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS team_stats_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_name TEXT,
+            domain TEXT,
+            stats_url TEXT,
+            last_checked DATETIME
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+
+def find_valid_url(domain: str) -> str:
+    """Try each common stats path until one returns valid HTML."""
+    for path in CANDIDATE_PATHS:
+        url = f"https://{domain}{path}"
+        try:
+            r = requests.get(url, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code == 200 and "stats" in r.text.lower():
+                print(f"✅ Found valid stats page for {domain}: {url}")
+                return url
+        except Exception as e:
+            print(f"⚠️ {domain}{path} -> {e}")
+    return None
+
+
+def main():
+    print("=== 🏀 ParleyMind Scout: NCAA Stats URL Discovery ===")
+    init_db()
+
+    results = []
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    for team_name, domain in TEAM_DOMAINS:
+        url = find_valid_url(domain)
+        results.append((team_name, url or "❌ Not Found"))
+
+        # Write to DB
+        cur.execute("""
+            INSERT INTO team_stats_sources (team_name, domain, stats_url, last_checked)
+            VALUES (?, ?, ?, ?)
+        """, (team_name, domain, url, datetime.utcnow()))
+        conn.commit()
+
+    conn.close()
+
+    # Write to CSV
+    os.makedirs(os.path.dirname(OUTPUT_CCSV := OUTPUT_CSV), exist_ok=True)
+    with open(OUTPUT_CCSV, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Team Name", "Domain", "Stats URL", "Last Checked"])
+        for team_name, url in results:
+            writer.writerow([team_name, url.split('/')[2] if url and url != "❌ Not Found" else "", url, datetime.utcnow()])
+
+    print(f"\n📄 Saved {len(results)} results to {OUTPUT_CSV}")
+    print(f"💾 Database updated at: {DB_PATH}")
+    print("✅ Done.\n")
+
+
+if __name__ == "__main__":
+    main()

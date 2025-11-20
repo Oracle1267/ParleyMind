@@ -1,0 +1,74 @@
+let tutorialStep = 0;
+const steps = [
+  {
+    title: "Step 1: Build the Safer Core",
+    text: "Pick six strong favorites with odds around –300. These form your foundation.",
+  },
+  {
+    title: "Step 2: Add Solid Edges",
+    text: "Now add three to four spreads or totals near –110. These steady your parlay.",
+  },
+  {
+    title: "Step 3: Add Value Pops",
+    text: "Finally, select three plus-money props between +150 and +250 to push for a big multiplier.",
+  },
+  {
+    title: "All Done!",
+    text: "You’ve built a balanced parlay. Click 'Copy to FanDuel' to save your ticket.",
+  }
+];
+
+document.getElementById("noviceToggle").addEventListener("click", showGuide);
+document.getElementById("tutorial-next").addEventListener("click", nextStep);
+
+function showGuide() {
+  tutorialStep = 0;
+  document.getElementById("tutorial-overlay").style.display = "flex";
+  updateTutorial();
+}
+
+function nextStep() {
+  tutorialStep++;
+  if (tutorialStep >= steps.length) {
+    endGuide();
+  } else {
+    updateTutorial();
+  }
+}
+
+function endGuide() {
+  document.getElementById("tutorial-overlay").style.display = "none";
+}
+
+function updateTutorial() {
+  const step = steps[tutorialStep];
+  document.getElementById("tutorial-step-title").innerText = step.title;
+  document.getElementById("tutorial-step-text").innerText = step.text;
+}
+
+document.getElementById("copyParlay").addEventListener("click", () => {
+  const level1 = document.getElementById("level1-list").innerText.trim();
+  const level2 = document.getElementById("level2-list").innerText.trim();
+  const level3 = document.getElementById("level3-list").innerText.trim();
+  const combined = document.getElementById("combined-odds").innerText;
+  const payout = document.getElementById("payout").innerText;
+
+  const summary = `
+PARLAY BUILDER SUMMARY
+======================
+Level 1 – Safer Core:
+${level1 || "(none)"}
+
+Level 2 – Solid Edges:
+${level2 || "(none)"}
+
+Level 3 – Value Pops:
+${level3 || "(none)"}
+
+Combined Odds: ${combined}
+Potential Payout: ${payout}
+======================
+  `;
+  navigator.clipboard.writeText(summary);
+  alert("Copied your parlay summary to clipboard!");
+});

@@ -1,0 +1,57 @@
+"""
+Odds Fetcher — retrieves live NCAAB odds and extracts per-team market probabilities.
+"""
+
+import requests, os, json
+from pathlib import Path
+
+API_KEY = os.getenv("ODDS_API_KEY", "c17a1600a50e9acec4a460903dc73c7e")
+BASE_URL = "https://api.the-odds-api.com/v4/sports/basketball_ncaab/odds"
+OUTFILE = Path(__file__).resolve().parents[2] / "data" / "odds_snapshot.json"
+
+def run():
+    print("[AGENT] Starting Odds Fetcher...")
+    params = {
+        "apiKey": API_KEY,
+        "regions": "us",
+        "markets": "h2h",
+        "oddsFormat": "american"
+    }
+
+    try:
+        r = requests.get(BASE_URL, params=params, timeout=15)
+        r.raise_for_status()
+        games = r.json()
+    except Exception as e:
+        print(f"[AGENT] ⚠️ Failed to fetch odds: {e}")
+        return []
+
+    simplified = []
+    for g in games:
+        for market in g.get("bookmakers", []):
+            for m in market.get("markets", []):
+                if m.get("key") == "h2h":
+                    outcomes = m.get("outcomes", [])
+                    for o in outcomes:
+                        team = o.get("name")
+                        price = o.get("price")
+                        if team and isinstance(price, (int, float)):
+                            # convert American odds to implied probability
+                            if price > 0:
+                                prob = 100 / (price + 100)
+                            else:
+                                prob = abs(price) / (abs(price) + 100)
+                            simplified.append({
+                                "team": team,
+                                "market_prob": round(prob, 4),
+                                "model_prob": 0.0  # placeholder until model inference exists
+                            })
+
+    OUTFILE.parent.mkdir(parents=True, exist_ok=True)
+    OUTFILE.write_text(json.dumps(simplified, indent=2), encoding="utf-8")
+
+    print(f"[AGENT] ✅ Saved simplified odds snapshot: {len(simplified)} entries -> {OUTFILE}")
+    return simplified
+
+if __name__ == "__main__":
+    run()

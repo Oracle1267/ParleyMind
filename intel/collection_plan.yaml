@@ -1,0 +1,200 @@
+# ================================
+# PARLEYMIND INTELLIGENCE COLLECTION PLAN v1.0
+# ================================
+
+metadata:
+  version: 1.0
+  created: 2025-11-12
+  author: ParleyMind / Nick G.
+  mission: >
+    Identify, measure, and exploit information asymmetries between
+    public perception, market pricing, and team performance to
+    generate sustainable edge in wagering decisions.
+
+priority_intelligence_requirements:
+
+  - id: PIR-1
+    name: Market Inefficiency Detection
+    question: Where is the betting market systematically mispricing teams or totals?
+    impact: Directly identifies positive-expected-value opportunities.
+    specific_requirements:
+      - id: SIR-1.1
+        question: What is the average model vs market probability gap per team?
+        frequency: daily
+        agent: edge_fusion_agent
+        indicators: [model_prob, market_prob, edge]
+      - id: SIR-1.2
+        question: Are our positions moving in our favor before tip-off (CLV)?
+        frequency: daily
+        agent: market_bias_agent
+        indicators: [clv_bps, closing_line_edge]
+
+  - id: PIR-2
+    name: Public Bias and Sentiment Impact
+    question: When does public sentiment distort market lines beyond performance justification?
+    impact: Detects exploitable "fandom" or "recency" bias.
+    specific_requirements:
+      - id: SIR-2.1
+        question: How does social sentiment volatility correlate with line drift?
+        frequency: hourly
+        agent: sentiment_collector
+        indicators: [reddit_sentiment, sentiment_volatility]
+      - id: SIR-2.2
+        question: Are handle vs ticket ratios skewed toward public money?
+        frequency: daily
+        agent: public_bias_monitor
+        indicators: [public_ticket_ratio, public_handle_ratio]
+
+  - id: PIR-3
+    name: Momentum and Regression Analysis
+    question: Which team streaks are statistically sustainable vs regression candidates?
+    impact: Prevents chasing false streaks or fading true ones.
+    specific_requirements:
+      - id: SIR-3.1
+        question: How stable is a team’s momentum over time?
+        frequency: weekly
+        agent: momentum_decay_agent
+        indicators: [momentum_score, last_10_eff_margin]
+      - id: SIR-3.2
+        question: Which teams' shooting % exceeds expected values by >1.5σ?
+        frequency: daily
+        agent: efficiency_tracker
+        indicators: [efficiency_margin, true_shooting_diff]
+
+  - id: PIR-4
+    name: Schedule and Environmental Stressors
+    question: Which teams are likely to underperform due to rest, travel, altitude, or density?
+    impact: Anticipates fatigue-related underperformance before it is priced in.
+    specific_requirements:
+      - id: SIR-4.1
+        question: How many games in the last 7 days, adjusted for travel miles and altitude?
+        frequency: daily
+        agent: schedule_stressor_agent
+        indicators: [fatigue_index, rest_days, travel_km, altitude_delta]
+      - id: SIR-4.2
+        question: What is the environmental advantage for home teams (altitude/humidity)?
+        frequency: pregame
+        agent: env_condition_agent
+        indicators: [altitude_delta, humidity_index]
+
+  - id: PIR-5
+    name: Information Asymmetry Timing
+    question: Where do insiders or algorithms move lines before public data releases?
+    impact: Enables early entry into profitable market moves.
+    specific_requirements:
+      - id: SIR-5.1
+        question: How many minutes before official news do lines shift?
+        frequency: live
+        agent: asymmetry_detector
+        indicators: [pre_news_move, news_timestamp]
+      - id: SIR-5.2
+        question: Do steam moves align with profitable closing line trends?
+        frequency: daily
+        agent: market_analytics_core
+        indicators: [steam_corr, line_move_delta]
+
+indicators:
+  model_prob:
+    description: Predicted win probability from ParleyMind model.
+    type: float
+    source: model_output
+    linked_pirs: [PIR-1]
+  market_prob:
+    description: No-vig implied probability from bookmaker odds.
+    type: float
+    source: odds_feed
+    linked_pirs: [PIR-1]
+  edge:
+    description: model_prob - market_prob
+    type: float
+    derived: true
+    linked_pirs: [PIR-1]
+  clv_bps:
+    description: Closing line vs open difference in basis points.
+    type: float
+    source: odds_feed
+    linked_pirs: [PIR-1]
+  reddit_sentiment:
+    description: Polarity score of Reddit discussions (scaled -1 to 1).
+    type: float
+    source: reddit_api
+    linked_pirs: [PIR-2]
+  sentiment_volatility:
+    description: 7-day standard deviation of sentiment.
+    type: float
+    derived: true
+    linked_pirs: [PIR-2]
+  public_ticket_ratio:
+    description: Percent of total bets on one side.
+    type: float
+    source: actionnetwork_api
+    linked_pirs: [PIR-2]
+  public_handle_ratio:
+    description: Percent of total money on one side.
+    type: float
+    source: vegasinsider_api
+    linked_pirs: [PIR-2]
+  efficiency_margin:
+    description: Offensive minus defensive efficiency.
+    type: float
+    source: teamrankings_scraper
+    linked_pirs: [PIR-3]
+  momentum_score:
+    description: Weighted blend of efficiency delta and sentiment trend.
+    type: float
+    derived: true
+    linked_pirs: [PIR-3]
+  fatigue_index:
+    description: Composite fatigue metric based on rest and travel.
+    type: float
+    derived: true
+    linked_pirs: [PIR-4]
+  altitude_delta:
+    description: Altitude difference between home and away venues.
+    type: int
+    source: geo_dataset
+    linked_pirs: [PIR-4]
+  pre_news_move:
+    description: Time delta (minutes) between line move and official news release.
+    type: float
+    derived: true
+    linked_pirs: [PIR-5]
+  steam_corr:
+    description: Correlation of steam moves with profitable closing outcomes.
+    type: float
+    derived: true
+    linked_pirs: [PIR-5]
+
+analytic_formulas:
+  edge_fused: >
+    (edge * 0.5) + (momentum_score * 0.2)
+    - (abs(reddit_sentiment) * 0.1)
+    - (fatigue_index * 0.1)
+    + (clv_bps / 100 * 0.1)
+  value_index: >
+    edge_fused * (1 - abs(reddit_sentiment)) * (0.5 + 0.05 * momentum_score)
+
+reporting:
+  output_path: data/edge_reports/
+  format: json
+  schedule: daily
+  example_product: |
+    {
+      "report_date": "2025-11-12",
+      "findings": [
+        {
+          "team": "Colorado State Rams",
+          "edge_score": 3.8,
+          "confidence": 0.79,
+          "finding": "Market undervalues team due to travel fatigue overreaction.",
+          "supporting_indicators": {
+            "fatigue_index": 1.2,
+            "momentum_score": 5.6,
+            "public_ticket_ratio": 0.72,
+            "reddit_sentiment": -0.34
+          },
+          "recommended_action": "Buy at +4.5 or better."
+        }
+      ]
+    }
+

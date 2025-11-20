@@ -1,0 +1,32 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.env.*
+*.pyo
+*.pyd
+
+# Project artifacts we do NOT want on GitHub
+backend/instance/parlaymind.db
+backend/instance/*.sqlite
+backend/instance/*.db*
+data/odds_snapshot.json
+data/social/reddit_sports.json
+data/edge_reports/
+logs/
+*.log
+*.pkl
+*.parquet
+
+# Caches / builds
+dist/
+build/
+*.egg-info/

@@ -1,0 +1,32 @@
+from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime
+
+db = SQLAlchemy()
+
+class Bet(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    bettor = db.Column(db.String(50), default="Me")  # or "Joe"
+    stake = db.Column(db.Float, nullable=False)
+    parlay_odds = db.Column(db.Float, nullable=False)
+    sport = db.Column(db.String(30), nullable=False)
+    result = db.Column(db.String(10), default="pending")  # win/loss/pending
+    payout = db.Column(db.Float, default=0.0)
+    profit = db.Column(db.Float, default=0.0)
+    num_legs = db.Column(db.Integer, default=0)
+    profit_boost = db.Column(db.Float, default=0.0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, onupdate=datetime.utcnow)
+    legs = db.relationship("Leg", backref="bet", cascade="all, delete-orphan")
+
+    def update_profit(self):
+        """Recalculate profit from payout and stake."""
+        self.profit = round((self.payout or 0) - (self.stake or 0), 2)
+        db.session.commit()
+
+
+class Leg(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    bet_id = db.Column(db.Integer, db.ForeignKey("bet.id"), nullable=False)
+    description = db.Column(db.String(200))
+    odds = db.Column(db.Float)
+    market_type = db.Column(db.String(50))  # Spread, Moneyline, Total, etc.

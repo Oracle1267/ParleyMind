@@ -1,0 +1,26 @@
+import os, json, sqlite3
+
+TRADECORE_PATH = r"C:\projects\ai_trade_core\data"
+
+def load_normalized_signals():
+    """Load vetted entity signals from AI_TRADE_CORE"""
+    file = os.path.join(TRADECORE_PATH, "normalized_signals.json")
+    if not os.path.exists(file):
+        return []
+    with open(file, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def get_team_signal(team_name: str):
+    """
+    Pull coherence / sentiment data for a team or region.
+    Returns a risk adjustment factor between -1.0 and +1.0.
+    """
+    signals = load_normalized_signals()
+    for s in signals:
+        if team_name.lower() in s.get("entity", "").lower():
+            score = s.get("coherence_score", 0)
+            sentiment = s.get("sentiment", 0)
+            # Example: weighted mean of coherence + sentiment
+            adj = round((score * 0.7 + sentiment * 0.3) / 100, 2)
+            return {"team": team_name, "risk_adj": adj, "source": s}
+    return {"team": team_name, "risk_adj": 0.0, "source": None}

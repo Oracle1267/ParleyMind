@@ -1,0 +1,37 @@
+import requests
+import datetime
+from textblob import TextBlob
+
+def get_team_mentions(team_name, sport):
+    """Query Bluesky posts mentioning this team or keywords like 'injury'."""
+    try:
+        url = f"https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q={team_name}+injury+OR+out+OR+probable"
+        r = requests.get(url, timeout=10)
+        data = r.json()
+
+        posts = data.get("posts", [])
+        mentions = []
+        for post in posts[:10]:  # limit to 10 most recent
+            text = post.get("record", {}).get("text", "")
+            created = post.get("record", {}).get("createdAt", "")
+            sentiment = TextBlob(text).sentiment.polarity
+
+            if any(k in text.lower() for k in ["injury", "out", "won't play", "questionable"]):
+                mentions.append({
+                    "text": text[:160],
+                    "sentiment": sentiment,
+                    "time": created,
+                    "author": post.get("author", {}).get("handle", "unknown")
+                })
+
+        avg_sent = sum(m["sentiment"] for m in mentions) / len(mentions) if mentions else 0
+        tone = "bullish" if avg_sent > 0.1 else "bearish" if avg_sent < -0.1 else "neutral"
+
+        return {
+            "social_mentions": len(mentions),
+            "social_sentiment": tone,
+            "posts": mentions
+        }
+
+    except Exception as e:
+        return {"social_mentions": 0, "social_sentiment": "neutral", "error": str(e)}

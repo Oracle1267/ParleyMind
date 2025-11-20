@@ -1,0 +1,29 @@
+# backend/utils/reddit_scheduler.py
+import threading, time, traceback, datetime
+from pathlib import Path
+from backend.utils.reddit_collector_sports import collect_reddit_sports
+
+REFRESH_INTERVAL_HOURS = 6  # run every 6 hours
+
+def _run_collector_once():
+    try:
+        print(f"[{datetime.datetime.utcnow():%Y-%m-%d %H:%M:%S}] [RedditScheduler] Refreshing sports context …")
+        collect_reddit_sports()
+        print(f"[{datetime.datetime.utcnow():%Y-%m-%d %H:%M:%S}] [RedditScheduler] ✅ refresh complete.")
+    except Exception as e:
+        print(f"[RedditScheduler] ⚠️ {e}")
+        traceback.print_exc()
+
+def _loop():
+    """Internal recurring timer loop."""
+    while True:
+        _run_collector_once()
+        # sleep for N hours
+        for _ in range(REFRESH_INTERVAL_HOURS * 60):
+            time.sleep(60)
+
+def start_reddit_scheduler():
+    """Launch background refresh thread if not already running."""
+    t = threading.Thread(target=_loop, name="RedditScheduler", daemon=True)
+    t.start()
+    print("[RedditScheduler] Started background thread.")

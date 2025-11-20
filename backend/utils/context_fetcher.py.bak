@@ -1,0 +1,33 @@
+import requests, datetime
+
+def get_team_context(team_name, sport="cfb"):
+    info = {"bye_week": False, "key_injuries": 0, "injury_notes": ""}
+
+    # --- Example: ESPN injury data ---
+    try:
+        r = requests.get(
+            f"https://site.api.espn.com/apis/site/v2/sports/football/{sport}/teams",
+            timeout=5
+        ).json()
+        for team in r.get("sports", [])[0].get("leagues", [])[0].get("teams", []):
+            if team_name.lower() in team["team"]["displayName"].lower():
+                tid = team["team"]["id"]
+                inj = requests.get(
+                    f"https://site.api.espn.com/apis/site/v2/sports/football/{sport}/teams/{tid}/injuries"
+                ).json()
+                injured = [
+                    p for p in inj.get("injuries", [])
+                    if p.get("status") in ("Out","Doubtful","Questionable")
+                ]
+                info["key_injuries"] = len(injured)
+                info["injury_notes"] = ", ".join(p["athlete"]["displayName"] for p in injured[:3])
+                break
+    except Exception as e:
+        info["injury_notes"] = f"err:{e}"
+
+    # --- Simple bye-week heuristic ---
+    # (you'd replace with schedule API later)
+    if info["key_injuries"] == 0:
+        info["bye_week"] = True  # placeholder until schedule endpoint wired
+
+    return info
