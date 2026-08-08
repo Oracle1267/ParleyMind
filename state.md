@@ -83,54 +83,7 @@ Active or planned source surfaces:
 - NCAAB dossier builder/scheduler code exists.
 - Reddit collection and social signal utilities exist.
 
-## Confirmed Breakpoints
-
-### `backend/utils/schema_linker.py`
-
-Status: broken.
-
-`python -m py_compile backend/utils/schema_linker.py` fails with:
-
-```text
-SyntaxError: expected 'except' or 'finally' block
-```
-
-The function also references values that are not initialized in the visible scope, including:
-
-- `normalize`
-- `updated_reddit`
-- `updated_odds`
-
-Impact:
-
-The source fusion handoff from Reddit and odds snapshots into `team_dossier` is not reliable until this module is repaired.
-
-### `backend/templates/index.html`
-
-Status: broken.
-
-The script section has malformed JavaScript around `loadOdds()`:
-
-```javascript
-async function loadOdds()
-async function loadEdges() {
-```
-
-It also calls `/api/edge/latest`, but no matching Flask route currently exists in `backend/main.py`.
-
-Impact:
-
-The browser UI cannot cleanly load live odds plus edge intelligence until the JS function structure and API route are repaired.
-
-### `backend/main.py`
-
-Status: partially inconsistent.
-
-The odds endpoint branches for `wncaab` and `volleyball`, but the matching helpers are not imported from `backend.utils.odds_fetcher`.
-
-Impact:
-
-Those sport keys can raise runtime errors even though the route appears to support them.
+## Open Risks
 
 ### `intel/modules/stats_enricher.py`
 
@@ -152,6 +105,18 @@ Impact:
 
 Momentum and confidence should be considered scaffolding, not production-grade betting signals.
 
+## Release Notes
+
+### 2026-08-08 Stabilization Pass
+
+- Repaired `backend/utils/schema_linker.py` so every project Python file compiles.
+- Fixed malformed frontend JavaScript around odds and edge loading.
+- Added `/api/edge/latest` to serve the newest `edge_report_v2_*.json`.
+- Imported the missing WNCAAB and volleyball odds helpers in `backend/main.py`.
+- Added `requirements.txt` and `pytest.ini`.
+- Added automated coverage for Python compilation, frontend script parsing, odds conversion, decision policy, migration idempotence, schema linking, and the latest-edge endpoint.
+- Added environment controls so tests can import the Flask app without starting background schedulers or touching the real app database.
+
 ## Existing Dirty Worktree Note
 
 At review time, the worktree already had an uncommitted change in:
@@ -164,20 +129,14 @@ That change imports `backend.utils.teamrankings_scraper` and computes efficiency
 
 Make the "source-to-edge spine" work end to end before adding new predictive complexity.
 
-### Step 1: Repair Linker and UI Contract
+### Step 1: Harden the Source Merge Contract
 
-- Fix `backend/utils/schema_linker.py` so it compiles and initializes all counters/helpers.
 - Define one canonical source merge contract:
   - `data/social/reddit_sports.json`
   - `data/odds_snapshot.json`
   - `backend/instance/parlaymind.db`
-- Add `/api/edge/latest` to serve the latest `edge_report_v2_*.json`.
-- Update `backend/templates/index.html` to consume the v2 report field names:
-  - `value_index_v2`
-  - `confidence_v2`
-  - `p_model`
-  - `p_market_consensus`
-  - `p_fanduel_entry`
+- Add timestamps and source provenance for every linked signal.
+- Add alias-aware team matching before relying on partial string matching.
 
 ### Step 2: Replace Placeholder Intelligence Inputs
 

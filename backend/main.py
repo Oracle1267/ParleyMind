@@ -1,4 +1,6 @@
 from flask import Flask, request, jsonify, render_template
+import json
+import os
 import sqlite3
 from pathlib import Path
 from flask_cors import CORS
@@ -10,6 +12,8 @@ from backend.utils.odds_fetcher import (
     get_nfl_odds,
     get_ncaab_odds,
     get_nhl_odds,
+    get_wncaab_odds,
+    get_volleyball_odds,
 )
 from backend.utils.context_fetcher import get_team_injuries
 from backend.utils.tradecore_bridge import get_team_signal
@@ -18,10 +22,14 @@ from backend.utils.context_engine import get_team_context
 
 app = Flask(__name__, static_folder="../static", static_url_path="/static")
 CORS(app)
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///parlaymind.db"
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv(
+    "PARLEY_SQLALCHEMY_DATABASE_URI",
+    "sqlite:///parlaymind.db",
+)
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db.init_app(app)
-DB = Path(__file__).parent / "instance" / "parlaymind.db"
+ROOT = Path(__file__).resolve().parents[1]
+DB = Path(os.getenv("PARLEY_DB") or (Path(__file__).parent / "instance" / "parlaymind.db"))
 
 
 
@@ -44,6 +52,22 @@ def api_dossier(team):
 @app.route("/")
 def home():
     return render_template("index.html")
+
+
+def _edge_reports_dir():
+    return Path(os.getenv("PARLEY_EDGE_REPORTS_DIR") or (ROOT / "data" / "edge_reports"))
+
+
+def _latest_edge_report():
+    reports_dir = _edge_reports_dir()
+    reports = sorted(
+        reports_dir.glob("edge_report_v2_*.json"),
+        key=lambda p: (p.stat().st_mtime, p.name),
+        reverse=True,
+    )
+    if not reports:
+        return None, reports_dir
+    return reports[0], reports_dir
 
 
 print(">>> Running main.py from:", __file__)
@@ -288,6 +312,26 @@ def stats_dashboard():
         "bettor_stats": bettor_stats,
         "sport_roi": sport_roi
     })
+
+
+@app.route("/api/edge/latest", methods=["GET"])
+def latest_edge_report():
+    report_path, reports_dir = _latest_edge_report()
+    if not report_path:
+        return jsonify({
+            "error": "no_edge_reports",
+            "findings": [],
+            "reports_dir": str(reports_dir),
+        }), 404
+
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return jsonify({"error": "invalid_edge_report", "detail": str(e)}), 500
+
+    payload.setdefault("findings", [])
+    payload["source_file"] = report_path.name
+    return jsonify(payload)
         
 @app.route("/api/context/ai/<team>")
 def ai_context(team):
@@ -365,16 +409,16 @@ def list_dossiers():
         return jsonify({"error": str(e)}), 500
 
 
-# 🧠 start background Reddit collector
-try:
-    start_reddit_scheduler()
-except Exception as e:
-    print(f"[INIT] Could not start Reddit scheduler: {e}")
+if os.getenv("PARLEYMIND_DISABLE_SCHEDULERS") != "1":
+    try:
+        start_reddit_scheduler()
+    except Exception as e:
+        print(f"[INIT] Could not start Reddit scheduler: {e}")
 
-try:
-    start_ncaab_dossier_scheduler(app)
-except Exception as e:
-    print(f"[INIT] Could not start NCAAB dossier scheduler: {e}")
+    try:
+        start_ncaab_dossier_scheduler(app)
+    except Exception as e:
+        print(f"[INIT] Could not start NCAAB dossier scheduler: {e}")
 
 
 if __name__ == "__main__":

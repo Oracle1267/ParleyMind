@@ -47,12 +47,20 @@ Parleys should be treated as a downstream construction problem, not the first pr
 
 ## Known Gaps
 
-- `backend/templates/index.html` has malformed JavaScript around `loadOdds()` and references `/api/edge/latest`, which is not currently implemented.
-- `backend/utils/schema_linker.py` does not compile in its current state and needs repair before it can merge Reddit and odds signals.
 - `intel/modules/stats_enricher.py` and `intel/modules/momentum_engine.py` still use placeholder stats/form logic.
-- `backend/main.py` has branches for `wncaab` and `volleyball` odds without importing the matching helper functions.
 - There are duplicate legacy modules and backups that should be pruned once the active path is confirmed.
-- No dependency manifest or automated test suite is present yet.
+
+## Release Notes
+
+### 2026-08-08 Stabilization Pass
+
+- Repaired `backend/utils/schema_linker.py` so every tracked project Python file compiles.
+- Fixed malformed frontend JavaScript in `backend/templates/index.html`.
+- Added `/api/edge/latest` to serve the newest `edge_report_v2_*.json` report.
+- Imported the missing WNCAAB and volleyball odds helpers in `backend/main.py`.
+- Added `requirements.txt`.
+- Added a small pytest suite covering Python compilation, frontend script parsing, odds conversion, decision policy, migration idempotence, schema linking, and the latest-edge endpoint.
+- Added test-safe environment controls for scheduler startup and database/report paths.
 
 ## Setup
 
@@ -69,7 +77,7 @@ PARLEY_DB=backend/instance/parlaymind.db
 Install the Python dependencies used by the current code:
 
 ```powershell
-pip install flask flask-cors flask-sqlalchemy python-dotenv requests beautifulsoup4 textblob pytz
+pip install -r requirements.txt
 ```
 
 Run the Flask app:
@@ -84,16 +92,21 @@ Run the intelligence cycle:
 python -m intel.intel_cycle
 ```
 
+Run the automated checks:
+
+```powershell
+pytest -q
+```
+
 ## Modernization Priority
 
 The next engineering pass should focus on making the intelligence cycle reliable end to end:
 
-1. Repair `backend/utils/schema_linker.py` and define a repeatable source-ingestion order.
-2. Add `/api/edge/latest` so the UI can consume the newest generated report.
-3. Replace placeholder enrichment with real TeamRankings/official stats data and a team alias map.
-4. Persist open/hourly/pre-close/close odds snapshots for CLV tracking.
-5. Add a bet journal/audit trail that records why a bet was considered, when the line was captured, and what source triggered the idea.
-6. Add focused tests for odds conversion, decision thresholds, migration idempotence, and report generation.
+1. Define a repeatable source-ingestion order around odds, Reddit/social data, team stats, and dossier updates.
+2. Replace placeholder enrichment with real TeamRankings/official stats data and a team alias map.
+3. Persist open/hourly/pre-close/close odds snapshots for CLV tracking.
+4. Add a bet journal/audit trail that records why a bet was considered, when the line was captured, and what source triggered the idea.
+5. Expand tests from the stabilized moneyline path into end-to-end report generation and UI smoke coverage.
 
 ## Intended Mindset
 

@@ -145,7 +145,27 @@
 <script>
 let parlay = [];
 
-async function loadOdds() 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function formatNumber(value, digits = 3) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(digits) : "–";
+}
+
+function probToAmerican(prob) {
+  const p = Number(prob);
+  if (!Number.isFinite(p) || p <= 0 || p >= 1) return 0;
+  if (p < 0.5) return Math.round((100 * (1 - p)) / p);
+  return Math.round((-100 * p) / (1 - p));
+}
+
 async function loadEdges() {
   const container = document.getElementById("edge-container");
   container.innerHTML = "<em>Loading edges...</em>";
@@ -160,20 +180,26 @@ async function loadEdges() {
     let html = `
       <table class="table table-dark table-sm">
         <thead><tr>
-          <th>Team</th><th>Edge</th><th>ValueIdx</th><th>Sent</th><th>Conf</th><th></th>
+          <th>Team</th><th>Edge</th><th>ValueIdx</th><th>Conf</th><th>Units</th><th></th>
         </tr></thead><tbody>
     `;
 
     findings.slice(0, 15).forEach(f => {
-      const color = f.edge > 0 ? "text-success" : "text-danger";
+      const edge = Number(f.edge || 0);
+      const valueIndex = Number(f.value_index_v2 ?? f.value_index ?? 0);
+      const confidence = Number(f.confidence_v2 ?? f.confidence ?? f.conf ?? 0);
+      const marketProb = Number(f.p_fanduel_entry || f.p_market_consensus || f.market_prob || 0);
+      const modelProb = Number(f.p_model || f.model_prob || 0);
+      const color = edge > 0 ? "text-success" : "text-danger";
+      const team = String(f.team || "Unknown");
       html += `
         <tr>
-          <td>${f.team}</td>
-          <td class="${color}">${f.edge.toFixed(3)}</td>
-          <td>${f.value_index.toFixed(3)}</td>
-          <td>${f.reddit_sentiment.toFixed(2)}</td>
-          <td>${(f.confidence * 100).toFixed(0)}%</td>
-          <td><button onclick='addIntelLeg("${f.team}", ${f.model_prob}, ${f.market_prob})'>Add</button></td>
+          <td>${escapeHtml(team)}</td>
+          <td class="${color}">${formatNumber(edge)}</td>
+          <td>${formatNumber(valueIndex)}</td>
+          <td>${formatNumber(confidence * 100, 0)}%</td>
+          <td>${formatNumber(f.stake_units || 0, 2)}</td>
+          <td><button onclick='addIntelLeg(${JSON.stringify(team)}, ${modelProb}, ${marketProb})'>Add</button></td>
         </tr>
       `;
     });
@@ -181,54 +207,71 @@ async function loadEdges() {
     html += "</tbody></table>";
     container.innerHTML = html;
   } catch (err) {
+    if (err.response && err.response.status === 404) {
+      container.innerHTML = "<p>No edge report has been generated yet.</p>";
+      return;
+    }
     container.innerHTML = `<p style="color:#f77;">⚠️ Failed to load edge data.</p>`;
   }
 }
 
 // Called when user clicks “Add” from AI table
 function addIntelLeg(team, modelProb, marketProb) {
-  const impliedPrice = modelProb > marketProb
-    ? -(100 * marketProb / (modelProb - marketProb))
-    : (100 * (marketProb - modelProb) / marketProb);
-
+  const impliedPrice = probToAmerican(marketProb);
   const leg = { home: team, away: "AI Edge", price: impliedPrice, level: 2 };
   parlay.push(leg);
   updateParlayDisplay();
 }
-{
+
+async function loadOdds() {
   const sportSelect = document.getElementById("sportSelect");
   const sport = sportSelect ? sportSelect.value.toLowerCase() : "cfb";
-  const res = await axios.get(`/api/odds_ui/${sport}`);
-  const games = res.data;
-  const container = document.getElementById('odds-container');
-  container.innerHTML = '';
+  const container = document.getElementById("odds-container");
+  container.innerHTML = "<em>Loading odds...</em>";
 
-  games.forEach(g => {
-    const card = document.createElement('div');
-    card.className = 'card';
-    const body = document.createElement('div');
-    body.className = 'card-body';
-    body.innerHTML = `
-      <h5>${g.away_team} @ ${g.home_team}</h5>
-      <small>${new Date(g.commence_time).toLocaleString()}</small>
-      <div>${renderMarkets(g.markets, g)}</div>
-      <div id="context-${g.home_team.replace(/\s+/g,'_')}" class="ai-context" style="margin-top:6px; font-size:0.85em; color:#aaa;">
-        <em>Loading team data...</em>
-      </div>`;
-    card.appendChild(body);
-    container.appendChild(card);
-    fetchTeamContext(g.home_team, sport);
-  });
+  try {
+    const res = await axios.get(`/api/odds_ui/${sport}`);
+    const games = res.data;
+    container.innerHTML = "";
+
+    if (!Array.isArray(games) || !games.length) {
+      container.innerHTML = "<p>No odds available for this sport.</p>";
+      return;
+    }
+
+    games.forEach(g => {
+      const homeTeam = g.home_team || "Unknown";
+      const awayTeam = g.away_team || "Unknown";
+      const commence = g.commence_time ? new Date(g.commence_time).toLocaleString() : "Time TBD";
+      const card = document.createElement("div");
+      card.className = "card";
+      const body = document.createElement("div");
+      body.className = "card-body";
+      body.innerHTML = `
+        <h5>${escapeHtml(awayTeam)} @ ${escapeHtml(homeTeam)}</h5>
+        <small>${escapeHtml(commence)}</small>
+        <div>${renderMarkets(g.markets || [], g)}</div>
+        <div id="context-${homeTeam.replace(/\s+/g,'_')}" class="ai-context" style="margin-top:6px; font-size:0.85em; color:#aaa;">
+          <em>Loading team data...</em>
+        </div>`;
+      card.appendChild(body);
+      container.appendChild(card);
+      fetchTeamContext(homeTeam, sport);
+    });
+  } catch (err) {
+    container.innerHTML = `<p style="color:#f77;">⚠️ Failed to load odds.</p>`;
+  }
 }
 
 function renderMarkets(markets, game) {
   if (!markets.length) return '<p><i>No odds data.</i></p>';
   let html = '';
   markets.forEach(m => {
-    html += `<div><strong>${m.market}</strong><br>`;
+    html += `<div><strong>${escapeHtml(m.market)}</strong><br>`;
     m.outcomes.forEach(o => {
-      html += `<button onclick='addLeg("${game.home_team}", "${game.away_team}", ${o.price})'>
-        ${o.name} (${o.price > 0 ? '+' + o.price : o.price})
+      const price = Number(o.price || 0);
+      html += `<button onclick='addLeg(${JSON.stringify(game.home_team || "")}, ${JSON.stringify(game.away_team || "")}, ${price})'>
+        ${escapeHtml(o.name)} (${price > 0 ? '+' + price : price})
       </button> `;
     });
     html += `</div>`;

@@ -1,0 +1,9 @@
+beautifulsoup4
+flask
+flask-cors
+flask-sqlalchemy
+pytest
+python-dotenv
+pytz
+requests
+textblob
